@@ -16,6 +16,8 @@ target_to_text = {
 
 EOS = "#"
 
+PAD = -1
+
 input_characters = " ".join(target_to_text.values())
 valid_characters = [
     "0",
@@ -29,6 +31,7 @@ valid_characters = [
     "8",
     "9",
     EOS,
+    PAD,
 ] + list(set(input_characters))
 
 
@@ -68,6 +71,7 @@ def generate(
     batch_target_max_len = np.zeros((1, num_batches))
     targets_mask = []
     batch_input_max_len = np.zeros((1, num_batches))
+    inputs_len = np.zeros((num_batches, batch_size))
     _printed_warning = False
     # loop through number of batches
     for i in range(num_batches):
@@ -140,15 +144,15 @@ def generate(
         max_target_out_len = max(map(len, int_targets_out[-1]))
         max_input_len = max(map(len, int_inputs[-1]))
         targets_mask_tmp = np.zeros((batch_size, max_target_out_len))
-        add_targets_out = np.zeros((batch_size, max_target_out_len))
+        add_targets_out = np.full((batch_size, max_target_out_len), PAD)
         len_arr = [-len(thing) for thing in temp_int_inputs]
         sorted_arr = np.argsort(len_arr)
-        add_targets_in = np.zeros((batch_size, max_target_out_len))
-        add_inputs = np.zeros((batch_size, max_input_len))
+        add_targets_in = np.full((batch_size, max_target_out_len), PAD)
+        add_inputs = np.full((batch_size, max_input_len), PAD)
         for short_index, row in enumerate(sorted_arr):
             tmp_element = temp_int_inputs[row]
             add_inputs[short_index, : len(tmp_element)] = tmp_element
-
+            inputs_len[i, short_index] = len(tmp_element)
             tmp_element = temp_int_targets_in[row]
             add_targets_in[short_index, : len(tmp_element)] = tmp_element
 
@@ -185,6 +189,7 @@ def generate(
         text_inputs,
         text_targets_in,
         text_targets_out,
+        inputs_len,
     )
 
 
@@ -200,7 +205,8 @@ def main():
         text_inputs,
         text_targets_in,
         text_targets_out,
-    ) = generate(8, 10, min_len=2, max_len=4)
+        inputs_len,
+    ) = generate(8, 10, min_len=1, max_len=2)
 
     print_valid_characters()
     print("Stop/start character = #")
@@ -208,14 +214,15 @@ def main():
     for i in range(batch_size):
         print("\nSAMPLE", i)
         print("TEXT INPUTS:\t\t\t", text_inputs[i])
-        print("ENCODED INPUTS:\t\t\t", inputs[i])
-        print("INPUTS SEQUENCE LENGTH:\t", inputs_seqlen)
+        print("ENCODED INPUTS:\t\t\t\n", inputs[i])
+        print("INPUTS SEQUENCE LENGTH:\t\n", inputs_seqlen)
         print("TEXT TARGETS INPUT:\t\t", text_targets_in[i])
         print("TEXT TARGETS OUTPUT:\t", text_targets_out[i])
-        print("ENCODED TARGETS INPUT:\t", targets_in[i])
-        print("ENCODED TARGETS OUTPUT:\t", targets_out[i])
+        print("ENCODED TARGETS INPUT:\t\n", targets_in[i])
+        print("ENCODED TARGETS OUTPUT:\t\n", targets_out[i])
         print("TARGETS SEQUENCE LENGTH:", targets_seqlen)
-        print("TARGETS MASK:\t\t\t", targets_mask[i])
+        print("TARGETS MASK:\t\t\t\n", targets_mask[i])
+        print("INPUTS LEN:\t\t\t\n", inputs_len[i])
 
 
 if __name__ == "__main__":
