@@ -2,7 +2,6 @@ import numpy as np
 import torch
 
 target_to_text = {
-    "0": "zero",
     "1": "one",
     "2": "two",
     "3": "three",
@@ -16,11 +15,11 @@ target_to_text = {
 
 EOS = "#"
 
-PAD = -1
+PAD = "0"
 
 input_characters = " ".join(target_to_text.values())
 valid_characters = [
-    "0",
+    PAD,
     "1",
     "2",
     "3",
@@ -31,7 +30,6 @@ valid_characters = [
     "8",
     "9",
     EOS,
-    PAD,
 ] + list(set(input_characters))
 
 
@@ -71,7 +69,7 @@ def generate(
     batch_target_max_len = np.zeros((1, num_batches))
     targets_mask = []
     batch_input_max_len = np.zeros((1, num_batches))
-    inputs_len = np.zeros((num_batches, batch_size))
+    inputs_len = []
     _printed_warning = False
     # loop through number of batches
     for i in range(num_batches):
@@ -91,7 +89,7 @@ def generate(
 
             # list of text digits
             text_target = inp_str = "".join(
-                map(str, np.random.randint(0, 10, tar_len))
+                map(str, np.random.randint(1, 10, tar_len))
             )
             text_target_in = EOS + text_target
             text_target_out = text_target + EOS
@@ -143,22 +141,24 @@ def generate(
         max_target_out_len = max(map(len, int_targets_out[-1]))
         max_input_len = max(map(len, int_inputs[-1]))
         targets_mask_tmp = np.zeros((batch_size, max_target_out_len))
-        add_targets_out = np.full((batch_size, max_target_out_len), PAD)
+        add_targets_out = np.full((batch_size, max_target_out_len), int(PAD))
         len_arr = [-len(thing) for thing in temp_int_inputs]
         sorted_arr = np.argsort(len_arr)
-        add_targets_in = np.full((batch_size, max_target_out_len), PAD)
-        add_inputs = np.full((batch_size, max_input_len), PAD)
+        add_targets_in = np.full((batch_size, max_target_out_len), int(PAD))
+        add_inputs = np.full((batch_size, max_input_len), int(PAD))
+        tmp_inputs_len = np.zeros(len(sorted_arr))
         for short_index, row in enumerate(sorted_arr):
             tmp_element = temp_int_inputs[row]
             add_inputs[short_index, : len(tmp_element)] = tmp_element
-            inputs_len[i, short_index] = len(tmp_element)
+            tmp_inputs_len[short_index] = len(tmp_element)
+
             tmp_element = temp_int_targets_in[row]
             add_targets_in[short_index, : len(tmp_element)] = tmp_element
 
             tmp_element = temp_int_targets_out[row]
             add_targets_out[short_index, : len(tmp_element)] = tmp_element
             targets_mask_tmp[short_index, : len(tmp_element)] = 1
-
+        inputs_len.append(tmp_inputs_len)
         targets_mask.append(targets_mask_tmp)
         inputs.append(add_inputs.astype("int32"))
         targets_in.append(add_targets_in.astype("int32"))
@@ -170,14 +170,6 @@ def generate(
 
         batch_target_max_len[0, i] = target_in_seq_lengths.max()
         batch_input_max_len[0, i] = input_seq_lengths.max()
-        print("batch ", i, " ended with ", len(text_targets_in[-1]))
-
-    print(
-        "Generated batch length {} from {} iterations".format(
-            len(text_inputs), iterations
-        )
-    )
-
     return (
         inputs,
         batch_input_max_len.astype("int32"),
