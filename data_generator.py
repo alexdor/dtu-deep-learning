@@ -75,7 +75,6 @@ def generate(
     _printed_warning = False
     # loop through number of batches
     for i in range(num_batches):
-        print("batch ", i, " starting")
         temp_text_inputs = []
         temp_int_inputs = []
         temp_text_targets_in = []
