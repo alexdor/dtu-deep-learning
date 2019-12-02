@@ -136,6 +136,7 @@ class EncoderDecoder(nn.Module):
         trg,
         trg_mask,
         decoder_hidden=None,
+        max_len=None,
     ):
         return self.decoder(
             self.trg_embed(trg),
@@ -144,6 +145,7 @@ class EncoderDecoder(nn.Module):
             src_mask,
             trg_mask,
             hidden=decoder_hidden,
+            max_len=max_len,
         )
 
 
@@ -457,8 +459,8 @@ def make_model(
             num_layers=num_layers,
             dropout=dropout,
         ),
-        nn.Embedding(src_vocab, emb_size),
-        nn.Embedding(tgt_vocab, emb_size),
+        nn.Embedding(src_vocab, emb_size, padding_idx=0),
+        nn.Embedding(tgt_vocab, emb_size, padding_idx=0),
         Generator(hidden_size, tgt_vocab),
     )
 
@@ -779,7 +781,6 @@ def print_examples(
             batch.src,
             batch.src_mask,
             batch.src_lengths,
-            max_len=max_len,
             sos_index=trg_sos_index,
             eos_index=trg_eos_index,
         )
@@ -800,7 +801,7 @@ def print_examples(
 def train_copy_task():
     """Train the simple copy task."""
     num_words = 10
-    criterion = nn.NLLLoss(reduction="sum", ignore_index=0)
+    criterion = nn.NLLLoss(reduction="mean", ignore_index=0)
     model = make_model(
         src_vocab_len, trg_vocab_len, emb_size=32, hidden_size=64
     )
@@ -812,7 +813,7 @@ def train_copy_task():
     eval_data = list(
         data_gen(
             num_words=num_words,
-            batch_size=batch_size,
+            batch_size=1,
             num_batches=num_batches,
             min_length=min_length,
             max_length=max_length,
@@ -851,7 +852,7 @@ def train_copy_task():
             )
             print("Evaluation perplexity: %f" % perplexity)
             dev_perplexities.append(perplexity)
-            # print_examples(eval_data, model, n=2, max_len=9)
+            print_examples(eval_data, model, n=2, max_len=max_length)
 
     return dev_perplexities
 
