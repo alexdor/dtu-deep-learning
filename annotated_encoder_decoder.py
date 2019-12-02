@@ -601,7 +601,7 @@ def data_gen(
     min_length=3,
     max_length=8,
     pad_index=0,
-    sos_index=1,
+    eos_index=1,
 ):
     """Generate random data for a src-tgt copy task."""
     for i in range(num_batches):
@@ -614,7 +614,7 @@ def data_gen(
             for i in range(batch_size)
         ]
         for arr in data:
-            arr[0] = sos_index
+            arr[-1] = eos_index
         trg_max_length = max([len(i) for i in data])
         tmp = np.zeros((batch_size, trg_max_length), dtype="int64")
         trg_lengths = []
@@ -627,7 +627,7 @@ def data_gen(
             [
                 target_to_text[str(x)]
                 for x in i
-                if x not in (pad_index, sos_index)
+                if x not in (pad_index, eos_index)
             ]
             for i in data
         ]
@@ -644,8 +644,6 @@ def data_gen(
         data = torch.from_numpy(data)
         data = data.cuda() if USE_CUDA else data
         trg = data
-        # src_lengths = [src_max_len] * batch_size
-        # trg_lengths = [trg_max_length] * batch_size
         yield Batch(
             (torch.LongTensor(src), src_lengths),
             (torch.LongTensor(trg), trg_lengths),
@@ -688,13 +686,13 @@ We use greedy decoding for simplicity; that is, at each time step, starting at t
 
 
 def greedy_decode(
-    model, src, src_mask, src_lengths, max_len=100, sos_index=1, eos_index=None
+    model, src, src_mask, src_lengths, max_len=100, sos_index=None, eos_index=1
 ):
     """Greedily decode a sentence."""
 
     with torch.no_grad():
         encoder_hidden, encoder_final = model.encode(src, src_mask, src_lengths)
-        prev_y = torch.ones(1, 1).fill_(sos_index).type_as(src)
+        prev_y = torch.ones(1, 1).fill_(eos_index).type_as(src)
         trg_mask = torch.ones_like(prev_y)
 
     output = []
@@ -748,7 +746,7 @@ def print_examples(
     max_len=100,
     sos_index=1,
     src_eos_index=None,
-    trg_eos_index=None,
+    trg_eos_index=1,
     src_vocab=None,
     trg_vocab=None,
 ):
@@ -764,8 +762,8 @@ def print_examples(
         trg_eos_index = trg_vocab.stoi[EOS_TOKEN]
     else:
         src_eos_index = None
-        trg_sos_index = 1
-        trg_eos_index = None
+        trg_sos_index = None
+        trg_eos_index = 1
 
     for i, batch in enumerate(example_iter):
 
