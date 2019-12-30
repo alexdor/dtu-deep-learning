@@ -28,6 +28,7 @@ class Batch:
         self.init_encoder_seq()  # initialize the input to the encoder
         self.init_decoder_seq()  # initialize the input and targets for the decoder
         self.store_orig_strings()
+        self.nseqs = self.enc_batch.size(0)
 
     def init_encoder_seq(self):
         # Determine the maximum length of the encoder input sequence in this batch
