@@ -67,12 +67,15 @@
 # %%
 #!pip install --upgrade torch numpy matplotlib sacrebleu
 
+# %% [markdown]
+# Commented out IPython magic to ensure Python compatibility.
 
 # %%
 import copy
 import math
 import time
 
+import chainer.functions as chain
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -85,6 +88,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from batch import BatchGeneration
 from config import (
+    DEVICE,
     SENTENCE_START,
     START_DECODING,
     STOP_DECODING,
@@ -99,10 +103,6 @@ from config import (
 from vocab import Vocab
 
 # %% [markdown]
-# Commented out IPython magic to ensure Python compatibility.
-
-
-# %% [markdown]
 # For data loading.<br>
 # from torchtext import data, datasets
 # %% [markdown]
@@ -110,6 +110,8 @@ from vocab import Vocab
 
 # %%
 USE_CUDA = torch.cuda.is_available()
+print("CUDA:", USE_CUDA)
+print(DEVICE)
 
 
 # %%
@@ -194,15 +196,26 @@ class Generator(nn.Module):
 
     def __init__(self, hidden_size, vocab_size):
         super(Generator, self).__init__()
+        self.vocab_size = vocab_size
         self.proj = nn.Linear(hidden_size, vocab_size, bias=False)
+
+    def pad_that_shit(self, shit, max_shit_len, dim):
+        shape = list(shit.shape)
+        shape[dim] = max_shit_len
+        arr = torch.from_numpy(np.zeros(shape, dtype=np.float32)).to(DEVICE)
+        for i in range(len(shit)):
+            for j in range(len(shit[i])):
+                max_len = len(shit[i][j])
+                arr[i][j][:max_len] = shit[i][j]
+        return arr
 
     def forward(self, x, p_gen, attn):
         p_vocab = F.log_softmax(self.proj(x), dim=-1)
-        p_gen = p_gen.unsqueeze(1)
-        p_vocab = p_vocab.permute(0, 2, 1)
-        attn = attn.permute(0, 2, 1)
+        p_gen = p_gen.unsqueeze(2)
         print(p_vocab.shape, p_gen.shape, attn.shape)
-        return p_gen * p_vocab + (1 - p_gen) * attn
+        return p_gen * p_vocab + (1 - p_gen) * self.pad_that_shit(
+            attn, self.vocab_size, -1
+        )
 
 
 # %% [markdown]
@@ -450,7 +463,7 @@ class BahdanauAttention(nn.Module):
         # Calculate scores.
         scores = self.energy_layer(torch.tanh(query + proj_key))
         scores = scores.squeeze(2).unsqueeze(1)
-
+        mask = mask.unsqueeze(1)
         # Mask out invalid positions.
         # The mask marks valid positions so we invert it using `mask & 0`.
         scores.data.masked_fill_(mask == 0, -float("inf"))
@@ -510,7 +523,6 @@ def make_model(
 # needed to train a standard encoder decoder model. First we define a batch object that holds the src and target sentences for training, as well as their lengths and masks.<br>
 # ## Batches and Masking<br>
 #
-
 # %% [markdown]
 #
 # ## Training Loop<br>
@@ -533,7 +545,9 @@ def run_epoch(data_iter, model, loss_compute, print_every=50):
             batch.enc_lens,
             batch.dec_lens,
         )
-        loss = loss_compute(pre_output, p_gen, attn, batch.trg_y, batch.nseqs)
+        loss = loss_compute(
+            pre_output, p_gen, attn, batch.target_batch, batch.nseqs
+        )
         total_loss += loss
         total_tokens += batch.ntokens
         print_tokens += batch.ntokens
@@ -559,8 +573,6 @@ def run_epoch(data_iter, model, loss_compute, print_every=50):
 # We can begin by trying out a simple copy-task. Given a random set of input symbols from a small vocabulary, the goal is to generate back those same symbols.<br>
 # ## Synthetic Data<br>
 #
-
-
 # %% [markdown]
 #
 # ## Loss Computation
@@ -711,7 +723,7 @@ def print_examples(
 # Train the simple copy task.
 #
 
-
+# %%
 def train_copy_task():
     vocab = Vocab(vocab_path, vocab_size)
     criterion = nn.NLLLoss(reduction="sum", ignore_index=0)
@@ -762,6 +774,28 @@ def train_copy_task():
 
 # %%
 dev_perplexities, hypotheses, alphas, src_ex, trg_ex = train_copy_task()
+
+# %% [markdown]
+# ### ATTEMPT AT TRAINING
+#
+
+# %%
+
+
+# %%
+
+
+# %%
+vocab = Vocab(vocab_path, vocab_size)
+model = make_model(
+    vocab.size(),
+    vocab.size(),
+    emb_size=256,
+    hidden_size=256,
+    num_layers=1,
+    dropout=0.2,
+)
+dev_perplexities = train(model, print_every=100)
 
 
 # %%
