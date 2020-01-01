@@ -271,3 +271,12 @@ class Data:
             self.enc_input.append(pad_id)
         while len(self.enc_input_extend_vocab) < max_len:
             self.enc_input_extend_vocab.append(pad_id)
+            
+def get_extra_zeros(batch):
+
+    extra_zeros = None
+    if batch.max_art_oovs > 0:
+        extra_zeros = torch.zeros(batch_size,batch.dec_batch.size(1),batch.max_art_oovs).to(DEVICE)
+
+    return extra_zeros
+
