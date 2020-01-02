@@ -26,7 +26,7 @@ class Batch:
     """
 
     def __init__(self, data_list, pad_index):
-        self.batch_size = batch_size
+        self.batch_size = len(data_list)
         self.pad_index = pad_index
         self.data_list = data_list
         self.init_encoder_seq()  # initialize the input to the encoder
@@ -287,7 +287,7 @@ def get_extra_zeros(batch):
     extra_zeros = None
     if batch.max_art_oovs > 0:
         extra_zeros = torch.zeros(
-            batch_size, batch.dec_batch.size(1), batch.max_art_oovs
+            batch.batch_size, batch.dec_batch.size(1), batch.max_art_oovs
         ).to(DEVICE)
 
     return extra_zeros

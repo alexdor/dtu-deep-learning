@@ -78,7 +78,6 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-
 # import sacrebleu
 import torch.nn as nn
 import torch.nn.functional as F
@@ -86,20 +85,9 @@ from IPython.core.debugger import set_trace
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from batch import BatchGeneration, get_extra_zeros
-from config import (
-    DEVICE,
-    PAD_TOKEN,
-    SENTENCE_START,
-    START_DECODING,
-    STOP_DECODING,
-    batch_size,
-    emb_dim,
-    hidden_dim,
-    test_data_path,
-    train_data_path,
-    vocab_path,
-    vocab_size,
-)
+from config import (DEVICE, PAD_TOKEN, SENTENCE_START, START_DECODING,
+                    STOP_DECODING, batch_size, emb_dim, hidden_dim,
+                    test_data_path, train_data_path, vocab_path, vocab_size)
 from vocab import Vocab
 
 # %% [markdown]
@@ -561,7 +549,7 @@ def make_model(
 #
 
 # %%
-def run_epoch(data_iter, model, loss_compute, print_every=50):
+def run_epoch(data_iter, model, loss_compute, print_every=1):
     """Standard Training and Logging Function"""
     start = time.time()
     total_tokens = 0
@@ -589,8 +577,8 @@ def run_epoch(data_iter, model, loss_compute, print_every=50):
             batch.nseqs,
         )
         total_loss += loss
-        total_tokens += batch.ntokens.item()
-        print_tokens += batch.ntokens.item()
+        total_tokens += batch.ntokens
+        print_tokens += batch.ntokens
         if model.training and i % print_every == 0:
             elapsed = time.time() - start
             epoch_time += elapsed
@@ -605,7 +593,10 @@ def run_epoch(data_iter, model, loss_compute, print_every=50):
             start = time.time()
             print_tokens = 0
     epoch_time += time.time() - start
-    print(f" Epoch finished, Time elapsed: {epoch_time}")
+    if model.training:
+        print(
+            f" Epoch finished, Time elapsed: {epoch_time}, final loss: {loss} "
+        )
     return math.exp(total_loss / float(total_tokens))
 
 
@@ -664,7 +655,15 @@ class SimpleLossCompute:
 
 # %%
 def greedy_decode(
-    model, src, src_mask, src_lengths, max_len=100, sos_index=1, eos_index=1
+    enc_batch_extend_vocab,
+    extra_zeros,
+    model,
+    src,
+    src_mask,
+    src_lengths,
+    max_len=100,
+    sos_index=1,
+    eos_index=1,
 ):
     """Greedily decode a sentence."""
     with torch.no_grad():
@@ -721,13 +720,13 @@ def greedy_decode(
 # %%
 def lookup_words(x, vocab=None):
     if vocab is not None:
-        x = [vocab.itos[i] for i in x]
+        x = [vocab.word2id(i) for i in x]
     return [str(t) for t in x]
 
 
 # %%
-def turn_num_to_text(nums):
-    return [valid_characters[num] for num in nums]
+def turn_num_to_text(nums, vocab: Vocab):
+    return [vocab.id2word(num) for num in nums]
 
 
 # %%
@@ -746,6 +745,8 @@ def print_examples(
     count = 0
     hypotheses = []
     alphas = []
+    srcs = []
+    trgs = []
     print()
     if vocab is not None:
         src_eos_index = vocab.word2id(SENTENCE_START)
@@ -758,11 +759,14 @@ def print_examples(
     for i, batch in enumerate(example_iter):
         src = batch.enc_batch.cpu().numpy()[0, :]
         trg = batch.target_batch.cpu().numpy()[0, :]
-
+        print(src)
         # remove </s> (if it is there)
         src = src[:-1] if src[-1] == src_eos_index else src
         trg = trg[:-1] if trg[-1] == trg_eos_index else trg
+        extra_zeros = get_extra_zeros(batch)
         result, alpha = greedy_decode(
+            batch.enc_batch_extend_vocab,
+            extra_zeros,
             model,
             batch.enc_batch,
             batch.enc_padding_mask,
@@ -772,17 +776,20 @@ def print_examples(
         )
         match = 0
         print("Example #%d" % (i + 1))
-        print("Src : ", "".join(turn_num_to_text(src)))
+        print("Src : ", "".join(turn_num_to_text(src, vocab)))
         print("Trg : ", " ".join(lookup_words(trg, vocab=vocab)))
         print("Pred: ", " ".join(lookup_words(result, vocab=vocab)))
+        # print("Pred: ", " ".join(outputids2words(result, vocab=vocab,art_oovs)))
         print()
         count += 1
         print()
         if count == n:
             break
-    hypotheses.append(result)
-    alphas.append(alpha)
-    return hypotheses, alphas, src, trg
+        hypotheses.append(result)
+        alphas.append(alpha)
+        srcs.append(src)
+        trgs.append(trg)
+    return hypotheses, alphas, srcs, trgs
 
 
 # %% [markdown]
@@ -809,6 +816,7 @@ def train_copy_task():
     )
     optim = torch.optim.Adam(model.parameters(), lr=0.0003)
     eval_batch_generator = BatchGeneration(vocab, test_data_path, mode="eval")
+    eval_data = list(eval_batch_generator.data_gen())
     dev_perplexities = []
 
     train_batch_generator = BatchGeneration(
@@ -825,14 +833,13 @@ def train_copy_task():
             data, model, SimpleLossCompute(model.generator, criterion, optim)
         )
 
-        eval_data = eval_batch_generator.data_gen()
         data = train_batch_generator.data_gen()
+
         # evaluate
         model.eval()
         with torch.no_grad():
             perplexity = run_epoch(
-                # eval_data,
-                data,
+                eval_data,
                 model,
                 SimpleLossCompute(model.generator, criterion, None),
             )
@@ -865,16 +872,17 @@ dev_perplexities, hypotheses, alphas, src_ex, trg_ex = train_copy_task()
 
 
 # %%
-vocab = Vocab(vocab_path, vocab_size)
-model = make_model(
-    vocab.size(),
-    vocab.size(),
-    emb_size=256,
-    hidden_size=256,
-    num_layers=1,
-    dropout=0.2,
-)
-dev_perplexities = train(model, print_every=100)
+# vocab = Vocab(vocab_path, vocab_size)
+# model = make_model(
+#     vocab,
+#     vocab.size(),
+#     vocab.size(),
+#     emb_size=256,
+#     hidden_size=256,
+#     num_layers=1,
+#     dropout=0.2,
+# )
+# dev_perplexities = train(model, print_every=100)
 
 
 # %%
