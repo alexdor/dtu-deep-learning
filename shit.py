@@ -75,7 +75,6 @@ import copy
 import math
 import time
 
-import chainer.functions as chain
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -86,9 +85,10 @@ import torch.nn.functional as F
 from IPython.core.debugger import set_trace
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-from batch import BatchGeneration
+from batch import BatchGeneration, get_extra_zeros
 from config import (
     DEVICE,
+    PAD_TOKEN,
     SENTENCE_START,
     START_DECODING,
     STOP_DECODING,
@@ -143,11 +143,26 @@ class EncoderDecoder(nn.Module):
         self.trg_embed = trg_embed
         self.generator = generator
 
-    def forward(self, src, trg, src_mask, trg_mask, src_lengths, trg_lengths):
+    def forward(
+        self,
+        enc_batch_extended_vocab,
+        src,
+        trg,
+        src_mask,
+        trg_mask,
+        src_lengths,
+        trg_lengths,
+    ):
         """Take in and process masked src and target sequences."""
         encoder_hidden, encoder_final = self.encode(src, src_mask, src_lengths)
         return self.decode(
-            encoder_hidden, encoder_final, src_mask, trg, trg_mask
+            enc_batch_extended_vocab,
+            encoder_hidden,
+            encoder_final,
+            src_mask,
+            src,
+            trg,
+            trg_mask,
         )
 
     def encode(self, src, src_mask, src_lengths):
@@ -155,20 +170,24 @@ class EncoderDecoder(nn.Module):
 
     def decode(
         self,
+        enc_batch_extended_vocab,
         encoder_hidden,
         encoder_final,
         src_mask,
         trg,
         trg_mask,
+        src,
         decoder_hidden=None,
         max_len=None,
     ):
         return self.decoder(
+            enc_batch_extended_vocab,
             self.trg_embed(trg),
             encoder_hidden,
             encoder_final,
             src_mask,
             trg_mask,
+            src,
             hidden=decoder_hidden,
             max_len=max_len,
         )
@@ -199,23 +218,18 @@ class Generator(nn.Module):
         self.vocab_size = vocab_size
         self.proj = nn.Linear(hidden_size, vocab_size, bias=False)
 
-    def pad_that_shit(self, shit, max_shit_len, dim):
-        shape = list(shit.shape)
-        shape[dim] = max_shit_len
-        arr = torch.from_numpy(np.zeros(shape, dtype=np.float32)).to(DEVICE)
-        for i in range(len(shit)):
-            for j in range(len(shit[i])):
-                max_len = len(shit[i][j])
-                arr[i][j][:max_len] = shit[i][j]
-        return arr
-
-    def forward(self, x, p_gen, attn):
-        p_vocab = F.log_softmax(self.proj(x), dim=-1)
+    def forward(self, x, p_gen, attn, enc_batch_extend_vocab, extra_zeros):
+        p_vocab = F.softmax(self.proj(x), dim=-1)
         p_gen = p_gen.unsqueeze(2)
-        print(p_vocab.shape, p_gen.shape, attn.shape)
-        return p_gen * p_vocab + (1 - p_gen) * self.pad_that_shit(
-            attn, self.vocab_size, -1
+        vocab_dist = p_gen * p_vocab
+        attn_dist_ = (1 - p_gen) * attn
+        vocab_dist = torch.cat([vocab_dist, extra_zeros], dim=-1)
+        # print(vocab_dist.shape,enc_batch_extend_vocab.shape,attn_dist_.shape,enc_batch_extend_vocab,torch.max(enc_batch_extend_vocab))
+        final_dist = vocab_dist.scatter_add_(
+            2, enc_batch_extend_vocab, attn_dist_
         )
+        # print(final_dist)
+        return final_dist
 
 
 # %% [markdown]
@@ -245,9 +259,12 @@ class Generator(nn.Module):
 class Encoder(nn.Module):
     """Encodes a sequence of word embeddings"""
 
-    def __init__(self, input_size, hidden_size, num_layers=1, dropout=0.0):
+    def __init__(
+        self, vocab, input_size, hidden_size, num_layers=1, dropout=0.0
+    ):
         super(Encoder, self).__init__()
         self.num_layers = num_layers
+        self.vocab = vocab
         self.rnn = nn.GRU(
             input_size,
             hidden_size,
@@ -268,7 +285,9 @@ class Encoder(nn.Module):
         )
         output, final = self.rnn(packed)
         output, _ = pad_packed_sequence(
-            output, batch_first=True, padding_value=0
+            output,
+            batch_first=True,
+            padding_value=self.vocab.word2id(PAD_TOKEN),
         )
 
         # we need to manually concatenate the final states for both directions
@@ -356,15 +375,17 @@ class Decoder(nn.Module):
         gen_output = gen_output.squeeze(1)
         p_gen = self.sigmoid(gen_output)  # [B, 1]
 
-        return output, hidden, pre_output, gen_output, attn_probs
+        return output, hidden, pre_output, p_gen, attn_probs
 
     def forward(
         self,
+        enc_batch_extended_vocab,
         trg_embed,
         encoder_hidden,
         encoder_final,
         src_mask,
         trg_mask,
+        src,
         hidden=None,
         max_len=None,
     ):
@@ -388,6 +409,8 @@ class Decoder(nn.Module):
         pre_output_vectors = []
         attn_probs_vectors = []
         p_gen_vectors = []
+        enc_batch_extended_vocab_vectors = []
+        enc_batch_extended_vocab = enc_batch_extended_vocab.unsqueeze(1)
 
         # unroll the decoder RNN for max_len steps
         for i in range(max_len):
@@ -399,16 +422,21 @@ class Decoder(nn.Module):
             pre_output_vectors.append(pre_output)
             p_gen_vectors.append(p_gen)
             attn_probs_vectors.append(attn_probs)
+            enc_batch_extended_vocab_vectors.append(enc_batch_extended_vocab)
         decoder_states = torch.cat(decoder_states, dim=1)
         pre_output_vectors = torch.cat(pre_output_vectors, dim=1)
         p_gen_vectors = torch.cat(p_gen_vectors, dim=1)
         attn_probs_vectors = torch.cat(attn_probs_vectors, dim=1)
+        enc_batch_extended_vocab_vectors = torch.cat(
+            enc_batch_extended_vocab_vectors, dim=1
+        )
         return (
             decoder_states,
             hidden,
             pre_output_vectors,
             p_gen_vectors,
             attn_probs_vectors,
+            enc_batch_extended_vocab_vectors,
         )  # [B, N, D]
 
     def init_hidden(self, encoder_final):
@@ -490,6 +518,7 @@ class BahdanauAttention(nn.Module):
 
 # %%
 def make_model(
+    vocab,
     src_vocab,
     tgt_vocab,
     emb_size=256,
@@ -500,7 +529,9 @@ def make_model(
     "Helper: Construct a model from hyperparameters."
     attention = BahdanauAttention(hidden_size)
     model = EncoderDecoder(
-        Encoder(emb_size, hidden_size, num_layers=num_layers, dropout=dropout),
+        Encoder(
+            vocab, emb_size, hidden_size, num_layers=num_layers, dropout=dropout
+        ),
         Decoder(
             emb_size,
             hidden_size,
@@ -536,8 +567,11 @@ def run_epoch(data_iter, model, loss_compute, print_every=50):
     total_tokens = 0
     total_loss = 0
     print_tokens = 0
+    epoch_time = 0
     for i, batch in enumerate(data_iter, 1):
-        out, _, pre_output, p_gen, attn = model.forward(
+        extra_zeros = get_extra_zeros(batch)
+        out, _, pre_output, p_gen, attn, enc_batch_extend_vocab = model.forward(
+            batch.enc_batch_extend_vocab,
             batch.enc_batch,
             batch.dec_batch,
             batch.enc_padding_mask,
@@ -546,20 +580,36 @@ def run_epoch(data_iter, model, loss_compute, print_every=50):
             batch.dec_lens,
         )
         loss = loss_compute(
-            pre_output, p_gen, attn, batch.target_batch, batch.nseqs
+            pre_output,
+            p_gen,
+            attn,
+            enc_batch_extend_vocab,
+            extra_zeros,
+            batch.target_batch,
+            batch.nseqs,
         )
         total_loss += loss
-        total_tokens += batch.ntokens
-        print_tokens += batch.ntokens
+        total_tokens += batch.ntokens.item()
+        print_tokens += batch.ntokens.item()
         if model.training and i % print_every == 0:
             elapsed = time.time() - start
+            epoch_time += elapsed
+            loss = (
+                loss / batch.nseqs
+                if batch.nseqs != 0
+                else "error in calculating loss!"
+            )
             print(
-                "Epoch Step: %d Loss: %f Tokens per Sec: %f"
-                % (i, loss / batch.nseqs, print_tokens / elapsed)
+                f"Epoch Step: {i} Loss: {loss} Tokens per Sec: {print_tokens / elapsed}"
             )
             start = time.time()
             print_tokens = 0
+    epoch_time += time.time() - start
+    print(f" Epoch finished, Time elapsed: {epoch_time}")
     return math.exp(total_loss / float(total_tokens))
+
+
+# %%
 
 
 # %% [markdown]
@@ -587,8 +637,13 @@ class SimpleLossCompute:
         self.criterion = criterion
         self.opt = opt
 
-    def __call__(self, x, p_gen, attn, y, norm):
-        x = self.generator(x, p_gen, attn)
+    def __call__(
+        self, x, p_gen, attn, enc_batch_extend_vocab, extra_zeros, y, norm
+    ):
+        x = self.generator(x, p_gen, attn, enc_batch_extend_vocab, extra_zeros)
+        x = torch.log(x)
+        # print(x.shape,y.shape,x.size)
+        # print(x.contiguous().view(-1, x.size(-1)).shape, y.contiguous().view(-1).shape)
         loss = self.criterion(
             x.contiguous().view(-1, x.size(-1)), y.contiguous().view(-1)
         )
@@ -621,7 +676,15 @@ def greedy_decode(
     hidden = None
     for i in range(max_len):
         with torch.no_grad():
-            out, hidden, pre_output, attn = model.decode(
+            (
+                out,
+                hidden,
+                pre_output,
+                p_gen,
+                attn,
+                enc_batch_extend_vocab,
+            ) = model.decode(
+                enc_batch_extend_vocab,
                 encoder_hidden,
                 encoder_final,
                 src_mask,
@@ -632,7 +695,13 @@ def greedy_decode(
 
             # we predict from the pre-output layer, which is
             # a combination of Decoder state, prev emb, and context
-            prob = model.generator(pre_output[:, -1], p_gen[:, -1], attn[:, -1])
+            prob = model.generator(
+                pre_output[:, -1],
+                p_gen[:, -1],
+                attn[:, -1],
+                enc_batch_extend_vocab,
+                extra_zeros,
+            )
         _, next_word = torch.max(prob, dim=1)
         next_word = next_word.data.item()
         output.append(next_word)
@@ -687,17 +756,17 @@ def print_examples(
         trg_sos_index = 1
         trg_eos_index = 1
     for i, batch in enumerate(example_iter):
-        src = batch.src.cpu().numpy()[0, :]
-        trg = batch.trg_y.cpu().numpy()[0, :]
+        src = batch.enc_batch.cpu().numpy()[0, :]
+        trg = batch.target_batch.cpu().numpy()[0, :]
 
         # remove </s> (if it is there)
         src = src[:-1] if src[-1] == src_eos_index else src
         trg = trg[:-1] if trg[-1] == trg_eos_index else trg
         result, alpha = greedy_decode(
             model,
-            batch.src,
-            batch.src_mask,
-            batch.src_lengths,
+            batch.enc_batch,
+            batch.enc_padding_mask,
+            batch.enc_lens,
             sos_index=trg_sos_index,
             eos_index=trg_eos_index,
         )
@@ -725,14 +794,21 @@ def print_examples(
 
 # %%
 def train_copy_task():
+
     vocab = Vocab(vocab_path, vocab_size)
-    criterion = nn.NLLLoss(reduction="sum", ignore_index=0)
+
+    criterion = nn.NLLLoss(
+        reduction="sum", ignore_index=vocab.word2id(PAD_TOKEN)
+    )
     model = make_model(
-        vocab.size(), vocab.size(), emb_size=emb_dim, hidden_size=hidden_dim
+        vocab,
+        vocab.size(),
+        vocab.size(),
+        emb_size=emb_dim,
+        hidden_size=hidden_dim,
     )
     optim = torch.optim.Adam(model.parameters(), lr=0.0003)
     eval_batch_generator = BatchGeneration(vocab, test_data_path, mode="eval")
-    eval_data = list(eval_batch_generator.data_gen())
     dev_perplexities = []
 
     train_batch_generator = BatchGeneration(
@@ -749,11 +825,14 @@ def train_copy_task():
             data, model, SimpleLossCompute(model.generator, criterion, optim)
         )
 
+        eval_data = eval_batch_generator.data_gen()
+        data = train_batch_generator.data_gen()
         # evaluate
         model.eval()
         with torch.no_grad():
             perplexity = run_epoch(
-                eval_data,
+                # eval_data,
+                data,
                 model,
                 SimpleLossCompute(model.generator, criterion, None),
             )
@@ -764,7 +843,7 @@ def train_copy_task():
                 eval_data,
                 model,
                 n=2,
-                max_len=max([data.size for data in eval_data]),
+                max_len=max([data.dec_lens for data in eval_data]),
             )
     return dev_perplexities, hypotheses, alphas, src_ex, trg_ex
 
@@ -847,3 +926,6 @@ print("src", src_text)
 print("ref", trg_ex)
 print("pred", pred_ex)
 plot_heatmap(src_text, pred_ex, pred_attn)
+
+
+# %%

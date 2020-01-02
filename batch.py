@@ -1,7 +1,11 @@
+import glob
 import logging
+import random
+import struct
 
 import numpy as np
 import torch
+from tensorflow.core.example import example_pb2
 
 from config import (
     DEVICE,
@@ -13,7 +17,7 @@ from config import (
     max_dec_steps,
     max_enc_steps,
 )
-from vocab import abstract2ids, article2ids, example_generator, text_generator
+from vocab import abstract2ids, article2ids
 
 
 class Batch:
@@ -127,16 +131,15 @@ class BatchGeneration:
         generator = example_generator(self.data_path, self.single_pass)
         while True:
             data_list = []
+            res = self.text_generator(generator)
             for i in range(batch_size):
-                res = text_generator(generator)
-                if self._finished_reading:
-                    return
                 try:
-                    article, abstract_sentences = next(self.get_src_trg(res))
+                    next_res = next(res)
+                    article, abstract_sentences = self.get_src_trg(next_res)
                 except StopIteration:
-                    yield Batch(
-                        data_list, self.pad_index,
-                    )
+                    if len(data_list) > 0:
+                        yield Batch(data_list, self.pad_index)
+                    return
 
                 data_list.append(self.encode_data(article, abstract_sentences))
             yield Batch(
@@ -199,6 +202,31 @@ class BatchGeneration:
             enc_input=enc_input,
         )
 
+    def text_generator(self, example_generator):
+        while True:
+            try:
+                e = next(example_generator)  # e is a tf.Example
+                article_text = e.features.feature["article"].bytes_list.value[
+                    0
+                ]  # the article text was saved under the key 'article' in the data files
+                abstract_text = e.features.feature["abstract"].bytes_list.value[
+                    0
+                ]  # the abstract text was saved under the key 'abstract' in the data files
+                article_text = article_text.decode()
+                abstract_text = abstract_text.decode()
+            except StopIteration:
+                return
+            except ValueError:
+                logging.error("Failed to get article or abstract from example")
+                continue
+            if (
+                len(article_text) == 0
+            ):  # See https://github.com/abisee/pointer-generator/issues/1
+                # tf.logging.warning('Found an example with empty article text. Skipping it.')
+                continue
+            else:
+                yield (article_text, abstract_text)
+
     def get_dec_inp_targ_seqs(self, sequence, max_len, start_id, stop_id):
         inp = [start_id] + sequence[:]
         target = sequence[:]
@@ -211,29 +239,10 @@ class BatchGeneration:
         return inp, target
 
     def get_src_trg(self, res):
-        while True:
-            try:
-                (article, abstract) = next(
-                    res
-                )  # read the next example from file. article and abstract are both strings.
-            except Exception:  # if there are no more examples:
-                logging.info(
-                    "The example generator for this example queue filling thread has exhausted data."
-                )
-                if self.single_pass:
-                    logging.info(
-                        "single_pass mode is on, so we've finished reading dataset. This thread is stopping."
-                    )
-                    self._finished_reading = True
-                    break
-                else:
-                    raise Exception(
-                        "single_pass mode is off but the example generator is out of data; error."
-                    )
+        (article, abstract,) = res
 
-            # abstract_sentences = [sent.strip() for sent in data.abstract2sents(abstract)] # Use the <s> and </s> tags in abstract to get a list of sentences.
-            abstract_sentences = [abstract.strip()]
-            yield (article, abstract_sentences)
+        # abstract_sentences = [sent.strip() for sent in data.abstract2sents(abstract)] # Use the <s> and </s> tags in abstract to get a list of sentences.
+        return (article, [abstract.strip()])
 
 
 class Data:
@@ -271,12 +280,36 @@ class Data:
             self.enc_input.append(pad_id)
         while len(self.enc_input_extend_vocab) < max_len:
             self.enc_input_extend_vocab.append(pad_id)
-            
+
+
 def get_extra_zeros(batch):
 
     extra_zeros = None
     if batch.max_art_oovs > 0:
-        extra_zeros = torch.zeros(batch_size,batch.dec_batch.size(1),batch.max_art_oovs).to(DEVICE)
+        extra_zeros = torch.zeros(
+            batch_size, batch.dec_batch.size(1), batch.max_art_oovs
+        ).to(DEVICE)
 
     return extra_zeros
 
+
+def example_generator(data_path, single_pass):
+    filelist = glob.glob(data_path)  # get the list of datafiles
+    assert filelist, (
+        "Error: Empty filelist at %s" % data_path
+    )  # check filelist isn't empty
+    if single_pass:
+        filelist = sorted(filelist)
+    else:
+        random.shuffle(filelist)
+    for f in filelist:
+        with open(f, "rb") as reader:
+            while True:
+                len_bytes = reader.read(8)
+                if not len_bytes:
+                    break  # finished reading this file
+                str_len = struct.unpack("q", len_bytes)[0]
+                example_str = struct.unpack(
+                    "%ds" % str_len, reader.read(str_len)
+                )[0]
+                yield example_pb2.Example.FromString(example_str)
