@@ -78,6 +78,7 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+
 # import sacrebleu
 import torch.nn as nn
 import torch.nn.functional as F
@@ -85,10 +86,21 @@ from IPython.core.debugger import set_trace
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from batch import BatchGeneration, get_extra_zeros
-from config import (DEVICE, PAD_TOKEN, SENTENCE_START, START_DECODING,
-                    STOP_DECODING, batch_size, emb_dim, hidden_dim,
-                    test_data_path, train_data_path, vocab_path, vocab_size)
-from vocab import Vocab
+from config import (
+    DEVICE,
+    PAD_TOKEN,
+    SENTENCE_START,
+    START_DECODING,
+    STOP_DECODING,
+    batch_size,
+    emb_dim,
+    hidden_dim,
+    test_data_path,
+    train_data_path,
+    vocab_path,
+    vocab_size,
+)
+from vocab import Vocab, outputids2words
 
 # %% [markdown]
 # For data loading.<br>
@@ -208,13 +220,13 @@ class Generator(nn.Module):
 
     def forward(self, x, p_gen, attn, enc_batch_extend_vocab, extra_zeros):
         p_vocab = F.softmax(self.proj(x), dim=-1)
-        p_gen = p_gen.unsqueeze(2)
+        # p_gen = p_gen.unsqueeze(2)
         vocab_dist = p_gen * p_vocab
         attn_dist_ = (1 - p_gen) * attn
         vocab_dist = torch.cat([vocab_dist, extra_zeros], dim=-1)
         # print(vocab_dist.shape,enc_batch_extend_vocab.shape,attn_dist_.shape,enc_batch_extend_vocab,torch.max(enc_batch_extend_vocab))
         final_dist = vocab_dist.scatter_add_(
-            2, enc_batch_extend_vocab, attn_dist_
+            -1, enc_batch_extend_vocab, attn_dist_
         )
         # print(final_dist)
         return final_dist
@@ -418,6 +430,7 @@ class Decoder(nn.Module):
         enc_batch_extended_vocab_vectors = torch.cat(
             enc_batch_extended_vocab_vectors, dim=1
         )
+        p_gen_vectors = p_gen_vectors.unsqueeze(-1)
         return (
             decoder_states,
             hidden,
@@ -673,34 +686,34 @@ def greedy_decode(
     output = []
     attention_scores = []
     hidden = None
-    for i in range(max_len):
-        with torch.no_grad():
-            (
-                out,
-                hidden,
-                pre_output,
-                p_gen,
-                attn,
-                enc_batch_extend_vocab,
-            ) = model.decode(
-                enc_batch_extend_vocab,
-                encoder_hidden,
-                encoder_final,
-                src_mask,
-                prev_y,
-                trg_mask,
-                hidden,
-            )
+    with torch.no_grad():
+        (
+            out,
+            hidden,
+            pre_output,
+            p_gen,
+            attn,
+            enc_batch_extend_vocab,
+        ) = model.decode(
+            enc_batch_extend_vocab,
+            encoder_hidden,
+            encoder_final,
+            src_mask,
+            prev_y,
+            trg_mask,
+            hidden,
+        )
 
-            # we predict from the pre-output layer, which is
-            # a combination of Decoder state, prev emb, and context
-            prob = model.generator(
-                pre_output[:, -1],
-                p_gen[:, -1],
-                attn[:, -1],
-                enc_batch_extend_vocab,
-                extra_zeros,
-            )
+        # we predict from the pre-output layer, which is
+        # a combination of Decoder state, prev emb, and context
+        prob = model.generator(
+            pre_output[:, -1],
+            p_gen[:, -1],
+            attn[:, -1],
+            enc_batch_extend_vocab[:, -1],
+            extra_zeros[:, -1],
+        )
+        # print(p_gen.shape,pre_output[:, -1].shape,attn[:,-1].shape,enc_batch_extend_vocab[:,-1].shape,extra_zeros[:,-1].shape)
         _, next_word = torch.max(prob, dim=1)
         next_word = next_word.data.item()
         output.append(next_word)
@@ -747,7 +760,7 @@ def print_examples(
     alphas = []
     srcs = []
     trgs = []
-    print()
+    # print()
     if vocab is not None:
         src_eos_index = vocab.word2id(SENTENCE_START)
         trg_sos_index = vocab.word2id(START_DECODING)
@@ -776,9 +789,11 @@ def print_examples(
         )
         match = 0
         print("Example #%d" % (i + 1))
-        print("Src : ", "".join(turn_num_to_text(src, vocab)))
-        print("Trg : ", " ".join(lookup_words(trg, vocab=vocab)))
-        print("Pred: ", " ".join(lookup_words(result, vocab=vocab)))
+        print("Src : ", "".join(outputids2words(src, vocab, batch.art_oovs)))
+        print("Trg : ", " ".join(outputids2words(trg, vocab, batch.art_oovs)))
+        print(
+            "Pred: ", " ".join(outputids2words(result, vocab, batch.art_oovs)),
+        )
         # print("Pred: ", " ".join(outputids2words(result, vocab=vocab,art_oovs)))
         print()
         count += 1
@@ -832,8 +847,6 @@ def train_copy_task():
         run_epoch(
             data, model, SimpleLossCompute(model.generator, criterion, optim)
         )
-
-        data = train_batch_generator.data_gen()
 
         # evaluate
         model.eval()
@@ -926,7 +939,7 @@ def plot_heatmap(src, trg, scores):
 # %%
 # This plots a chosen sentence, for which we saved the attention scores above.
 
-src_text = "".join(turn_num_to_text(src_ex))
+src_text = "".join(turn_num_to_text(src_ex, vocab))
 pred_ex = hypotheses[0]
 pred_attn = alphas[0][0].T[:, : len(pred_ex)]
 
