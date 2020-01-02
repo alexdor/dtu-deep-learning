@@ -119,6 +119,7 @@ class Batch:
 class BatchGeneration:
     def __init__(self, vocab, data_path, mode="train"):
         self.single_pass = mode != "train"
+        self.mode = mode
         self.data_path = data_path
         self.vocab = vocab
         self._finished_reading = False
@@ -136,6 +137,12 @@ class BatchGeneration:
                 try:
                     next_res = next(res)
                     article, abstract_sentences = self.get_src_trg(next_res)
+                    if self.mode != "train":
+                        yield Batch(
+                            [self.encode_data(article, abstract_sentences)],
+                            self.pad_index,
+                        )
+                        continue
                 except StopIteration:
                     if len(data_list) > 0:
                         yield Batch(data_list, self.pad_index)
