@@ -4,9 +4,9 @@ import torch
 
 dirname = os.path.dirname(__file__)
 data_path = os.path.join(dirname, "data")
-train_data_path = os.path.join(data_path, "chunked/train_*")
-valid_data_path = os.path.join(data_path, "chunked/valid_*")
-test_data_path = os.path.join(data_path, "chunked/test_*")
+train_data_path = os.path.join(data_path, "chunked/train/train_*")
+valid_data_path = os.path.join(data_path, "chunked/valid/valid_*")
+test_data_path = os.path.join(data_path, "chunked/test/test_*")
 vocab_path = os.path.join(data_path, "vocab")
 
 save_model_path = os.path.join(data_path, "saved_models")
