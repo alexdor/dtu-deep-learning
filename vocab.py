@@ -2,6 +2,7 @@
 
 import csv
 import glob
+import logging
 import random
 import struct
 
@@ -13,7 +14,6 @@ from config import (
     STOP_DECODING,
     UNKNOWN_TOKEN,
 )
-import logging
 
 
 # Note: none of <s>, </s>, [PAD], [UNK], [START], [STOP] should appear in the vocab file.
@@ -24,7 +24,7 @@ class Vocab(object):
         self._count = 0  # keeps track of total number of words in the Vocab
 
         # [UNK], [PAD], [START] and [STOP] get the ids 0,1,2,3.
-        for w in [UNKNOWN_TOKEN, PAD_TOKEN, START_DECODING, STOP_DECODING]:
+        for w in [PAD_TOKEN, UNKNOWN_TOKEN, START_DECODING, STOP_DECODING]:
             self._word_to_id[w] = self._count
             self._id_to_word[self._count] = w
             self._count += 1
@@ -120,23 +120,29 @@ def abstract2ids(abstract_words, vocab, article_oovs):
     return ids
 
 
+def get_ukn_word(i, vocab, article_oovs):
+    assert (
+        article_oovs is not None
+    ), "Error: model produced a word ID that isn't in the vocabulary. This should not happen in baseline (no pointer-generator) mode"
+    article_oov_idx = i - vocab.size()
+    w = UNKNOWN_TOKEN
+    try:
+        w = article_oovs[article_oov_idx]
+    except ValueError as e:  # i doesn't correspond to an article oov
+        raise ValueError(
+            "Error: model produced word ID %i which corresponds to article OOV %i but this example only has %i article OOVs"
+            % (i, article_oov_idx, len(article_oovs))
+        )
+    return w
+
+
 def outputids2words(id_list, vocab, article_oovs):
     words = []
     for i in id_list:
         try:
             w = vocab.id2word(i)  # might be [UNK]
         except ValueError as e:  # w is OOV
-            assert (
-                article_oovs is not None
-            ), "Error: model produced a word ID that isn't in the vocabulary. This should not happen in baseline (no pointer-generator) mode"
-            article_oov_idx = i - vocab.size()
-            try:
-                w = article_oovs[article_oov_idx]
-            except ValueError as e:  # i doesn't correspond to an article oov
-                raise ValueError(
-                    "Error: model produced word ID %i which corresponds to article OOV %i but this example only has %i article OOVs"
-                    % (i, article_oov_idx, len(article_oovs))
-                )
+            w = get_ukn_word(i, vocab, article_oovs)
         words.append(w)
     return words
 
