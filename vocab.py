@@ -1,160 +1,89 @@
-# Most of this file is copied form https://github.com/abisee/pointer-generator/blob/master/data.py
+import re
+from collections import Counter
+from functools import lru_cache
+from os import path
+from typing import List, Tuple
 
-import csv
-import glob
-import logging
-import random
-import struct
-
-from config import (
-    PAD_TOKEN,
-    SENTENCE_END,
-    SENTENCE_START,
-    START_DECODING,
-    STOP_DECODING,
-    UNKNOWN_TOKEN,
-)
+import numpy as np
 
 
-# Note: none of <s>, </s>, [PAD], [UNK], [START], [STOP] should appear in the vocab file.
 class Vocab(object):
-    def __init__(self, vocab_file, max_size):
-        self._word_to_id = {}
-        self._id_to_word = {}
-        self._count = 0  # keeps track of total number of words in the Vocab
+    word_detector = re.compile("\w")
+    PAD = 0
+    SOS = 1
+    EOS = 2
+    UNK = 3
 
-        # [UNK], [PAD], [START] and [STOP] get the ids 0,1,2,3.
-        for w in [PAD_TOKEN, UNKNOWN_TOKEN, START_DECODING, STOP_DECODING]:
-            self._word_to_id[w] = self._count
-            self._id_to_word[self._count] = w
-            self._count += 1
+    def __init__(self):
+        self.word2index = {}
+        self.word2count = Counter()
+        self.reserved = ["<PAD>", "<SOS>", "<EOS>", "<UNK>"]
+        self.index2word = self.reserved[:]
+        self.embeddings = None
 
-        # Read the vocab file and add words up to max_size
-        with open(vocab_file, "r", encoding="utf8") as vocab_f:
-            for line in vocab_f:
-                pieces = line.split()
-                if len(pieces) != 2:
-                    # print ('Warning: incorrectly formatted line in vocabulary file: %s\n' % line)
-                    continue
-                w = pieces[0]
-                if w in [
-                    SENTENCE_START,
-                    SENTENCE_END,
-                    UNKNOWN_TOKEN,
-                    PAD_TOKEN,
-                    START_DECODING,
-                    STOP_DECODING,
-                ]:
-                    raise Exception(
-                        "<s>, </s>, [UNK], [PAD], [START] and [STOP] shouldn't be in the vocab file, but %s is"
-                        % w
-                    )
-                if w in self._word_to_id:
-                    raise Exception(
-                        "Duplicated word in vocabulary file: %s" % w
-                    )
-                self._word_to_id[w] = self._count
-                self._id_to_word[self._count] = w
-                self._count += 1
-                if max_size != 0 and self._count >= max_size:
-                    # print ("max_size of vocab was specified as %i; we now have %i words. Stopping reading." % (max_size, self._count))
-                    break
+    def add_words(self, words: List[str]):
+        for word in words:
+            if word not in self.word2index:
+                self.word2index[word] = len(self.index2word)
+                self.index2word.append(word)
+        self.word2count.update(words)
 
-        # print ("Finished constructing vocabulary of %i total words. Last word added: %s" % (self._count, self._id_to_word[self._count-1]))
-
-    def word2id(self, word):
-        return self._word_to_id.get(word, self._word_to_id[UNKNOWN_TOKEN])
-
-    def id2word(self, word_id):
-        if word_id not in self._id_to_word:
-            raise ValueError("Id not found in vocab: %d" % word_id)
-        return self._id_to_word[word_id]
-
-    def size(self):
-        return self._count
-
-    def write_metadata(self, fpath):
-        print("Writing word embedding metadata file to %s..." % (fpath))
-        with open(fpath, "w") as f:
-            fieldnames = ["word"]
-            writer = csv.DictWriter(f, delimiter="\t", fieldnames=fieldnames)
-            for i in range(self.size()):
-                writer.writerow({"word": self._id_to_word[i]})
-
-
-def article2ids(article_words, vocab):
-    ids = []
-    oovs = []
-    unk_id = vocab.word2id(UNKNOWN_TOKEN)
-    for w in article_words:
-        i = vocab.word2id(w)
-        if i == unk_id:  # If w is OOV
-            if w not in oovs:  # Add to list of OOVs
-                oovs.append(w)
-            oov_num = oovs.index(
-                w
-            )  # This is 0 for the first article OOV, 1 for the second article OOV...
-            ids.append(
-                vocab.size() + oov_num
-            )  # This is e.g. 50000 for the first article OOV, 50001 for the second...
-        else:
-            ids.append(i)
-    return ids, oovs
-
-
-def abstract2ids(abstract_words, vocab, article_oovs):
-    ids = []
-    unk_id = vocab.word2id(UNKNOWN_TOKEN)
-    for w in abstract_words:
-        i = vocab.word2id(w)
-        if i == unk_id:  # If w is an OOV word
-            if w in article_oovs:  # If w is an in-article OOV
-                vocab_idx = vocab.size() + article_oovs.index(
-                    w
-                )  # Map to its temporary article OOV number
-                ids.append(vocab_idx)
-            else:  # If w is an out-of-article OOV
-                ids.append(unk_id)  # Map to the UNK token id
-        else:
-            ids.append(i)
-    return ids
-
-
-def get_ukn_word(i, vocab, article_oovs):
-    assert (
-        article_oovs is not None
-    ), "Error: model produced a word ID that isn't in the vocabulary. This should not happen in baseline (no pointer-generator) mode"
-    article_oov_idx = i - vocab.size()
-    w = UNKNOWN_TOKEN
-    try:
-        w = article_oovs[article_oov_idx]
-    except ValueError as e:  # i doesn't correspond to an article oov
-        raise ValueError(
-            "Error: model produced word ID %i which corresponds to article OOV %i but this example only has %i article OOVs"
-            % (i, article_oov_idx, len(article_oovs))
+    def trim(self, *, vocab_size: int = None, min_freq: int = 1):
+        if min_freq <= 1 and (
+            vocab_size is None or vocab_size >= len(self.word2index)
+        ):
+            return
+        ordered_words = sorted(
+            ((c, w) for (w, c) in self.word2count.items()), reverse=True
         )
-    return w
+        if vocab_size:
+            ordered_words = ordered_words[:vocab_size]
+        self.word2index = {}
+        self.word2count = Counter()
+        self.index2word = self.reserved[:]
+        for count, word in ordered_words:
+            if count < min_freq:
+                break
+            self.word2index[word] = len(self.index2word)
+            self.word2count[word] = count
+            self.index2word.append(word)
 
+    def load_embeddings(self, file_path: str, dtype=np.float32) -> int:
+        num_embeddings = 0
+        vocab_size = len(self)
+        with open(file_path, "rb", encoding="utf-8") as f:
+            for line in f:
+                line = line.split()
+                word = line[0].decode("utf-8")
+                idx = self.word2index.get(word)
+                if idx is not None:
+                    vec = np.array(line[1:], dtype=dtype)
+                    if self.embeddings is None:
+                        n_dims = len(vec)
+                        self.embeddings = np.random.normal(
+                            np.zeros((vocab_size, n_dims))
+                        ).astype(dtype)
+                        self.embeddings[self.PAD] = np.zeros(n_dims)
+                    self.embeddings[idx] = vec
+                    num_embeddings += 1
+        return num_embeddings
 
-def outputids2words(id_list, vocab, article_oovs):
-    words = []
-    for i in id_list:
-        try:
-            w = vocab.id2word(i)  # might be [UNK]
-        except ValueError as e:  # w is OOV
-            w = get_ukn_word(i, vocab, article_oovs)
-        words.append(w)
-    return words
+    def __getitem__(self, item):
+        if type(item) is int:
+            return self.index2word[item]
+        return self.word2index.get(item, self.UNK)
 
+    def __len__(self):
+        return len(self.index2word)
 
-def abstract2sents(abstract):
-    cur = 0
-    sents = []
-    while True:
-        try:
-            start_p = abstract.index(SENTENCE_START, cur)
-            end_p = abstract.index(SENTENCE_END, start_p + 1)
-            cur = end_p + len(SENTENCE_END)
-            sents.append(abstract[start_p + len(SENTENCE_START) : end_p])
-        except ValueError as e:  # no more sentences
-            return sents
+    @lru_cache(maxsize=None)
+    def is_word(self, token_id: int) -> bool:
+        """Return whether the token at `token_id` is a word; False for punctuations."""
+        if token_id < 4:
+            return False
+        if token_id >= len(self):
+            return True  # OOV is assumed to be words
+        token_str = self.index2word[token_id]
+        if not self.word_detector.search(token_str) or token_str == "<P>":
+            return False
+        return True
