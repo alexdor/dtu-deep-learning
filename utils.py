@@ -226,20 +226,3 @@ def rouge(
                 (metric + b"_" + rpf).decode("utf-8").lower()
             ] = float(value)
     return results
-
-
-def rouge_single(example: List[List[str]]) -> List[Dict[str, float]]:
-    """Helper for `rouge_parallel()`."""
-    return rouge(*example)
-
-
-def rouge_parallel(
-    target: List[List[str]], *predictions: List[List[str]]
-) -> List[List[Dict[str, float]]]:
-    """
-  Run ROUGE tests in parallel (by Python multi-threading, i.e. multiprocessing.dummy) to obtain
-  per-document scores. Depending on batch size and hardware, this may be slower or faster than
-  `rouge()`.
-  """
-    with Pool() as p:
-        return p.map(rouge_single, zip(target, *predictions))
