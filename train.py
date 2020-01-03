@@ -349,12 +349,7 @@ def main():
 
     if args.resume_from:
         print("Resuming from %s..." % args.resume_from)
-        train_status = torch.load(args.resume_from, map_location=DEVICE)
-        model = torch.load(
-            filename_format % (args.resume_from[:-9], train_status["epoch"]),
-            map_location=DEVICE,
-        )
-        params = train_status["params"]
+        model = torch.load(args.resume_from, map_location=DEVICE)
 
     if unknown_args:  # allow command line args to override params.py
         params.update(unknown_args)
