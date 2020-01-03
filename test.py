@@ -6,10 +6,10 @@ import torch
 from tqdm import tqdm
 
 from dataset import Batch, Dataset, OOVDict
-from vocab import Vocab
 from model import DEVICE, Seq2Seq, Seq2SeqOutput
 from params import Params
 from utils import format_rouge_scores, format_tokens, rouge
+from vocab import Vocab
 
 
 def decode_batch_output(
@@ -279,16 +279,16 @@ def main():
     if args.model:  # evaluate a specific model
         filename = args.model
     else:  # evaluate the best model
-        train_status = torch.load(p.model_path_prefix + ".train.pt")
+        train_status = torch.load(
+            p.model_path_prefix + ".train.pt", map_location=DEVICE
+        )
         filename = "%s.%02d.pt" % (
             p.model_path_prefix,
             train_status["best_epoch_so_far"],
         )
 
     print("Evaluating %s..." % filename)
-    m = torch.load(
-        filename
-    )  # use map_location='cpu' if you are testing a CUDA model using CPU
+    m = torch.load(filename, map_location=DEVICE)
 
     m.encoder.gru.flatten_parameters()
     m.decoder.gru.flatten_parameters()
@@ -300,7 +300,7 @@ def main():
         if p.vocab_size:
             filename += ".%d" % p.vocab_size
         filename += ".vocab"
-        v = torch.load(filename)
+        v = torch.load(filename, map_location=DEVICE)
         m.vocab = v
         m.max_dec_steps = m.max_output_length
 
