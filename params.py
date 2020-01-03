@@ -72,7 +72,7 @@ class Params:
     max_out_len: Optional[int] = 100
     out_len_in_words: bool = False
     test_data_path: str = "data/test.txt"
-    test_sample_ratio: float = 1  # what portion of the test data is used? (1 for all data)
+    test_sample_ratio: float = 0.01  # what portion of the test data is used? (1 for all data)
     test_save_results: bool = True
 
     def update(self, cmd_args: List[str]):
