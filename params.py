@@ -73,7 +73,7 @@ class Params:
     out_len_in_words: bool = False
     test_data_path: str = "data/test.txt"
     test_sample_ratio: float = 1  # what portion of the test data is used? (1 for all data)
-    test_save_results: bool = False
+    test_save_results: bool = True
 
     def update(self, cmd_args: List[str]):
         """Update configuration by a list of command line arguments"""
